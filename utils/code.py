@@ -1,7 +1,5 @@
 import re, ast
-import time
 import numpy as np
-import pandas as pd 
 from ast import literal_eval
 from collections import OrderedDict, defaultdict
 from src.sscm.SourceCode import SourceCode
@@ -10,31 +8,6 @@ from scipy.stats import median_abs_deviation
 from datasets import Dataset
 from python_minifier import minify
 from astor import to_source 
-
-def dataset_apply(dataset, function, column, new_name):
-
-    def f(example):
-        example[new_name] = function(column)
-    
-    return dataset.map(function)
-
-def minify_code(code):
-    code = minify(code, rename_locals=False)
-    return to_source(ast.parse(code))
-
-
-def stripComments(code):
-    code = str(code)
-    return re.sub(r'(?m)^ *#.*\n?', '', code)
-
-def remove_comments(example):
-    example["func_code"] = stripComments(example["func_code"])
-    return example
-
-def remove_prints(example):
-    s = 'print\([\"\'][\w\s]*[\"\']\)'
-    example["func_code"] = re.sub(s, '', example["func_code"]) 
-    return example 
 
 def has_multiple_functions(code):
     try:
@@ -82,7 +55,7 @@ def normalize_var_names(code):
     return code, code_string
 
 def add_normalized_ast(example, f_name="whole_func_string"):
-    norm_ast, norm_code = normalize_var_names(remove_docstring(example[f_name]))
+    norm_ast, norm_code = normalize_var_names(example[f_name])
     example["norm_ast"] = norm_ast
     example["norm_code"] = norm_code
     return example
@@ -104,25 +77,33 @@ def filter_with_mad(group_df, treshold):
     
     return group_df[mask]
 
+
+# Docstring 
+
 def remove_docstring(code_string):
     """ Remove the docstring part from the full function code. """
 
-    if '"""' in code_string:
-        delimiter = '"""'
-    elif "'''" in code_string:
-        delimiter = "'''"
-    else:
-        return code_string
-    
-    doc_start = code_string.find(delimiter)
-    doc_end = code_string.find(delimiter, doc_start + 1, -1) + 3
+    # Taken from
+    # https://gist.github.com/phpdude/1ae6f19de213d66286c8183e9e3b9ec1
 
-    def remove_part(l, start, end):
-        return l[:start] + l[end:].lstrip()
+    parsed = ast.parse(code_string)
+    for node in ast.walk(parsed):
+        # let's work only on functions & classes definitions
+        if not isinstance(node, (ast.FunctionDef, ast.ClassDef, ast.AsyncFunctionDef)):
+            continue
 
-    code_string = remove_part(code_string, doc_start, doc_end)
-    
-    return code_string
+        if not len(node.body):
+            continue
+
+        if not isinstance(node.body[0], ast.Expr):
+            continue
+
+        if not hasattr(node.body[0], 'value') or not isinstance(node.body[0].value, ast.Str):
+            continue
+
+    node.body = node.body[1:]
+
+    return to_source(parsed)
 
 def rest_docstring(code, docstring, test):
     idx = test.find('assert')
@@ -157,24 +138,11 @@ def rest_docstring(code, docstring, test):
 
     return full
 
-def map_no_docstring(example):
-    example["docstring"] = ""
-    return example
-
-def description_as_docstring(example):
-    example["docstring"] = example["description"]
-    return example 
-
-def map_augmented_docstring(example): # TODO: different levels of docstring
-    example["docstring"] = rest_docstring(example["func_code"],  
-                                          example["description"],
-                                          example["test"])
-    return example 
-
 def include_docstring(docstring, indentation):
     """ Format the docstring such that the identation matches
     the code indentation. 
     """
+
     lines = docstring.strip().splitlines()
     lines = [l.strip() for l in lines]
 
@@ -190,37 +158,27 @@ def include_docstring(docstring, indentation):
 
     return docstring
 
-def clean_code(code, docstring=""):
-    """ Remove comments, initial docstrings, and empty blank lines. 
-    Additionally, add a new docstring to the code."""
-
-    code = minify_code(code)
-    code  = remove_docstring(code)
-    lines = code.strip().split("\n")
-    lines = [line.rstrip() for line in lines]
-    lines = list(map(stripComments, lines))
-    lines = [l for l in lines if l and len(l) > 0]
-    idx = next(i for i in reversed(range(len(lines))) if lines[i].startswith("def"))
-    lines = lines[idx:]
-
-    # some codes could potentially be single line definitions,
-    # we transform these into multiline definitions
-    if len(lines) == 1:
-        lines = lines[0].split(":")
-        lines[0] += ":"
-
-    if docstring:
-        n_indents = len(lines[1]) - len(lines[1].lstrip())
-        indentation = lines[1][:n_indents]
-        lines.insert(1, include_docstring(docstring, indentation))
+def add_docstring(code, docstring):
+    """ Add the given docstring to the code. """
+    
+    lines = code.split("\n")
+    n_indents = len(lines[1]) - len(lines[1].lstrip())
+    indentation = lines[1][:n_indents]
+    lines.insert(1, include_docstring(docstring, indentation))
 
     return "\n".join(lines)
 
+def clean_code(code, remove_docstring=True):
+    """ Minify and clean a source code.
+    
+    Remove comments, initial docstrings, and empty blank lines. 
+    Additionally, add a new docstring to the code.
+    """
 
-def map_clean_code(example, column="whole_func_string"):
-    example[column] = clean_code(example["func_code"], example["docstring"])
-    return example
-
+    code = minify(code, rename_locals=False, remove_literal_statements=remove_docstring)
+    return to_source(ast.parse(code))
+    
+# Special for handling LLM model generations
 
 def find_implementation_start(code):
     lines = code.split("\n")
@@ -275,5 +233,26 @@ def does_compile(code):
     except:
         return False
 
+# Statistics 
 def count_lines(code):
     return len(code.splitlines())
+
+
+# Need to transform one function into the dataset
+# application format
+
+
+# Dataset application
+def dataset_apply(func, columns, new_name=""):
+
+    if type(columns) == str:
+        columns = [columns]
+    new_name = new_name if new_name else columns[0]
+
+    def f(example):
+        args = [example[c] for c in columns]
+        example[new_name] = func(*args)
+        return example
+    
+    return f
+
