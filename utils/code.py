@@ -1,13 +1,16 @@
-import re, ast
-import numpy as np
+import ast, dis
+from io import StringIO
 from ast import literal_eval
-from collections import OrderedDict, defaultdict
+from collections import defaultdict
 from src.sscm.SourceCode import SourceCode
 from src.sscm.extract import parse_upload
 from scipy.stats import median_abs_deviation
 from datasets import Dataset
 from python_minifier import minify
 from astor import to_source 
+import textwrap
+import numpy as np
+
 
 def has_multiple_functions(code):
     try:
@@ -20,45 +23,13 @@ def has_multiple_functions(code):
     return s.count(check) > 1
 
 def keep_unique_solutions(ds):
-    """ Remove duplicate solutions in terms of AST. """
+    """ Remove duplicate solutions"""
 
-    new_ds = ds.map(add_normalized_ast)
-    df = new_ds.to_pandas()
-    df = df.drop_duplicates("norm_ast")
-    df = df.drop_duplicates("norm_code")
-    new_ds = new_ds.select(df.index)
+    df = ds.to_pandas()
+    df["normalized"] = df["whole_func_string"].apply(code_uniqueness)
+    df = df.drop_duplicates("normalized", ignore_index=True, keep='last')
 
-    return new_ds 
-
-def normalize_var_names(code):
-    """ Replace variables names in a consistent manner. """
-    
-    code_ast = ast.parse(code)
-    code_string = ast.dump(code_ast)
-    
-    # Find all the variables in the code
-    variables = []
-    for node in ast.walk(code_ast):
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
-            variables.append(node.id)
-        if isinstance(node, ast.arg):
-            variables.append(node.arg)
-            
-    variables = list(OrderedDict.fromkeys(variables))
-    # Maps old variable names to new ones
-    new_var_name = {var: f"x_{i}" for i, var in enumerate(variables)}
-    
-    for var in variables:
-        code_string = code_string.replace(f"'{var}'", f"'{new_var_name[var]}'")
-        code = code.replace(f"'{var}'", f"'{new_var_name[var]}'")
-
-    return code, code_string
-
-def add_normalized_ast(example, f_name="whole_func_string"):
-    norm_ast, norm_code = normalize_var_names(example[f_name])
-    example["norm_ast"] = norm_ast
-    example["norm_code"] = norm_code
-    return example
+    return ds.select(df.index) 
 
 def remove_outliers_with_mad(dataset, column, treshold=2.5):
     df = dataset.to_pandas()
@@ -238,6 +209,7 @@ def count_lines(code):
     return len(code.splitlines())
 
 
+
 # Need to transform one function into the dataset
 # application format
 
@@ -256,3 +228,61 @@ def dataset_apply(func, columns, new_name=""):
     
     return f
 
+
+# Execution
+
+def get_code_executables(code):
+    """ Get the defined in the functions
+    
+    Parameters
+    ----------
+    code: string
+        Contains the definition of the function (as well as possible auxiliary functions definitions)
+        we want to execute. 
+    
+    Returns
+    -------
+    d: Dict
+        Functions and 
+        
+    """
+    dictionary = {}
+    string = textwrap.dedent(code)
+    exec(string, dictionary, dictionary)
+    
+    return dictionary
+
+def disassemble(func):
+    """ Diassemble a function into a set of instructions. """
+
+    output = StringIO()
+    dis.dis(func, file=output)
+    lines = output.getvalue().splitlines()
+    lines = [l[3:].strip() for l in lines]
+    return "\n".join(lines)
+
+def code_uniqueness(code, method="bytecode"):
+    """ Returns a normalized version of the code which could be
+    used later to compare functions equivalence. """
+    
+    # Inspirted by
+    # https://stackoverflow.com/questions/20059011/check-if-two-python-functions-are-equal
+    
+    comp_code = compile(code, "", "exec")
+    name = comp_code.co_names[0]
+    func = get_code_executables(code)[name]
+    variables = func.__code__.co_varnames
+    new_var_name = {var: f"x_{i}" for i, var in enumerate(variables)}
+
+    if method == "bytecode":
+        func.__code__ = func.__code__.replace(co_varnames=tuple(new_var_name.values()))
+        return func.__code__.co_code 
+    elif method == "dumped_ast":
+        dumped = ast.dump(ast.parse(code))
+        for var in variables:
+            dumped = dumped.replace(f"'{var}'", f"'{new_var_name[var]}'")
+    elif method == "dis":
+        func.__code__ = func.__code__.replace(co_varnames=tuple(new_var_name.values()))
+        return disassemble(func)
+    else:
+        raise ValueError("uknown method")
