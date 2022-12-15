@@ -22,13 +22,17 @@ def has_multiple_functions(code):
 
     return s.count(check) > 1
 
-def keep_unique_solutions(ds):
+def keep_unique_solutions(ds, code_co, fname_col):
     """ Remove duplicate solutions"""
 
     df = ds.to_pandas()
-    df["normalized"] = df["whole_func_string"].apply(code_uniqueness)
-    df = df.drop_duplicates("normalized", ignore_index=True, keep='last')
+    df["normalized"] = [code_uniqueness(code, func_name) 
+                        for code, func_name in df[[code_co, fname_col]].to_numpy()]
 
+    # Ideally here the code which would be selected would be the most generic one, i.e.,
+    # the one which is the most similar 
+    df = df.drop_duplicates("normalized", ignore_index=True, keep='last')
+    
     return ds.select(df.index) 
 
 def remove_outliers_with_mad(dataset, column, treshold=2.5):
@@ -208,12 +212,6 @@ def does_compile(code):
 def count_lines(code):
     return len(code.splitlines())
 
-
-
-# Need to transform one function into the dataset
-# application format
-
-
 # Dataset application
 def dataset_apply(func, columns, new_name=""):
 
@@ -261,7 +259,7 @@ def disassemble(func):
     lines = [l[3:].strip() for l in lines]
     return "\n".join(lines)
 
-def code_uniqueness(code, method="bytecode"):
+def code_uniqueness(code, fname, method="bytecode"):
     """ Returns a normalized version of the code which could be
     used later to compare functions equivalence. """
     
@@ -269,8 +267,11 @@ def code_uniqueness(code, method="bytecode"):
     # https://stackoverflow.com/questions/20059011/check-if-two-python-functions-are-equal
     
     comp_code = compile(code, "", "exec")
-    name = comp_code.co_names[0]
-    func = get_code_executables(code)[name]
+    name = comp_code.co_names[0] # here is the problem, the function doesn't have the right name 
+    func = get_code_executables(code)[fname]
+    if func is None:
+        raise ValueError(f"Function {code} could not be obtained")
+        
     variables = func.__code__.co_varnames
     new_var_name = {var: f"x_{i}" for i, var in enumerate(variables)}
 
