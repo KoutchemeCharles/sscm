@@ -2,6 +2,7 @@ import ast, dis
 from io import StringIO
 from ast import literal_eval
 from collections import defaultdict
+from warnings import warn
 from src.sscm.SourceCode import SourceCode
 from src.sscm.extract import parse_upload
 from scipy.stats import median_abs_deviation
@@ -23,17 +24,23 @@ def has_multiple_functions(code):
     return s.count(check) > 1
 
 def keep_unique_solutions(ds, code_co, fname_col):
-    """ Remove duplicate solutions"""
+    """ Remove duplicate solutions in terms of a metric. """
 
     df = ds.to_pandas()
     df["normalized"] = [code_uniqueness(code, func_name) 
                         for code, func_name in df[[code_co, fname_col]].to_numpy()]
-
-    # Ideally here the code which would be selected would be the most generic one, i.e.,
-    # the one which is the most similar 
-    df = df.drop_duplicates("normalized", ignore_index=True, keep='last')
     
-    return ds.select(df.index) 
+    def add_representative(sub_df):
+        """ Add the representative of the codes having the same appraoch. """
+        sub_df["representative"] = sub_df[code_co].value_counts().index[0]
+        return sub_df
+    
+    groups = df.groupby([fname_col, "normalized"], as_index=False)
+    new_df = groups.apply(add_representative)
+    # Now, select only one of the codes which match the representative 
+    new_df = new_df[new_df.representative == new_df[code_co]]
+    new_df = new_df.drop_duplicates("representative", ignore_index=True, keep='last')
+    return Dataset.from_pandas(new_df) 
 
 def remove_outliers_with_mad(dataset, column, treshold=2.5):
     df = dataset.to_pandas()
@@ -113,7 +120,7 @@ def rest_docstring(code, docstring, test):
 
     return full
 
-def include_docstring(docstring, indentation):
+def add_indentation_to_docstring(docstring, indentation):
     """ Format the docstring such that the identation matches
     the code indentation. 
     """
@@ -139,10 +146,16 @@ def add_docstring(code, docstring):
     lines = code.split("\n")
     n_indents = len(lines[1]) - len(lines[1].lstrip())
     indentation = lines[1][:n_indents]
-    lines.insert(1, include_docstring(docstring, indentation))
+    lines.insert(1, add_indentation_to_docstring(docstring, indentation))
 
     return "\n".join(lines)
 
+def get_code_identation(code):
+    code = clean_code(code)
+    lines = code.split("\n")
+    n_indents = len(lines[1]) - len(lines[1].lstrip())
+    return lines[1][:n_indents] 
+    
 def clean_code(code, remove_docstring=True):
     """ Minify and clean a source code.
     
@@ -151,7 +164,7 @@ def clean_code(code, remove_docstring=True):
     """
 
     code = minify(code, rename_locals=False, remove_literal_statements=remove_docstring)
-    return to_source(ast.parse(code))
+    return to_source(ast.parse(code)).strip()
     
 # Special for handling LLM model generations
 
@@ -204,6 +217,7 @@ def does_compile(code):
     """ Test whether a code does compile. """
     try:
         ast.parse(code)
+        exec(code)
         return True
     except:
         return False
@@ -266,9 +280,14 @@ def code_uniqueness(code, fname, method="bytecode"):
     # Inspirted by
     # https://stackoverflow.com/questions/20059011/check-if-two-python-functions-are-equal
     
-    comp_code = compile(code, "", "exec")
-    name = comp_code.co_names[0] # here is the problem, the function doesn't have the right name 
-    func = get_code_executables(code)[fname]
+    if get_function_name(code) != fname:
+        warn(f"Code {code} canot have a unique value")
+        return None
+
+    executables = get_code_executables(code)
+    if fname not in executables:
+        raise ValueError(f"Function {code} could not be obtained")
+    func = executables[fname]
     if func is None:
         raise ValueError(f"Function {code} could not be obtained")
         
