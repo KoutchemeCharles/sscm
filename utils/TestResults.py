@@ -14,9 +14,12 @@ class TestResults():
                                             predictions=predictions, 
                                             k=[1], num_workers=1, timeout=3)
 
-        return {"correct": [details[idx][0][1]["passed"] 
-                            for idx in range(len(references))]}
-    
+        # Careful, if it's empty then it should be False but it does not work that way?
+
+        return {"correct": (examples[code_col][i] # must not be "" (for which code_eval returns True)
+                                and details[i][0][1]["passed"]) 
+                                    for i, code in examples[code_col]}
+            
     def _analyze_details(self, ds, details):
         """ Check which test were passed. """
         pass 

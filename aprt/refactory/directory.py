@@ -1,16 +1,12 @@
 import os 
-from pathlib import Path
-from shutil import rmtree
-from src.utils.files import create_dir, save 
+from src.sscm.utils.files import create_dir, save 
 
 def create_save_dir(dataset, save_path):
     """ Create a temporary directory where the Refactory tool is going to
     load the data and perform the repairs. 
     """
-    if os.path.exists(save_path):
-        rmtree(save_path)
-    Path(save_path).mkdir(parents=True, exist_ok=True) 
 
+    create_dir(save_path, clear=True)
     dataframe = dataset.to_pandas()
     questions = sorted(dataframe["func_name"].unique())
     for i, question in enumerate(questions):
@@ -67,6 +63,15 @@ def create_code_folder(dataframe, question, question_id, question_path):
         if corr:
             ref_folder = os.path.join(code_folder, "reference")
             create_dir(ref_folder)
+            # as the reference solution take the solution with the biggest amount of info
+              
+            df = dataframe[dataframe.func_name == question]
+
+            if "ref_sol" in dataframe.columns:
+                ref = df["func_code"].iloc[0] 
+            else:
+                ref = df["func_code"].value_counts().index[0]
+
             if len(corr_progs):
                 save(os.path.join(ref_folder, "reference.py"), corr_progs[0])
         
@@ -101,8 +106,9 @@ def get_inputs_outputs(df, func_name):
     test_string = humaneval[humaneval.find("assert"):]
     test_string = test_string.replace("assert", "").strip()
 
+    test_string = test_string.replace(") ==", ")==")
     test_string = test_string.split(" and ")
-    
+    #print(test_string)
     inputs, outputs = zip(*[test_case.split(")==") 
                        for test_case in test_string])
     inputs = [i + ')' for i in inputs]

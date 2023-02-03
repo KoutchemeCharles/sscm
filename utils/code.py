@@ -11,6 +11,9 @@ from python_minifier import minify
 from astor import to_source 
 import textwrap
 import numpy as np
+import pandas as pd 
+from math import ceil 
+from tokenize_rt import src_to_tokens, tokens_to_src, Token
 
 
 def has_multiple_functions(code):
@@ -32,8 +35,14 @@ def keep_unique_solutions(ds, code_co, fname_col):
     
     def add_representative(sub_df):
         """ Add the representative of the codes having the same appraoch. """
-        sub_df["representative"] = sub_df[code_co].value_counts().index[0]
+        if not sub_df.empty:
+            sub_df["representative"] = sub_df[code_co].value_counts().index[0]
+        else:
+            sub_df["representative"] = sub_df[code_co]
         return sub_df
+    
+    
+    assert not df.empty
     
     groups = df.groupby([fname_col, "normalized"], as_index=False)
     new_df = groups.apply(add_representative)
@@ -62,12 +71,12 @@ def filter_with_mad(group_df, treshold):
 
 # Docstring 
 
-def remove_docstring(code_string):
+def remove_docstring(code_string, ret_docstrings=False):
     """ Remove the docstring part from the full function code. """
 
     # Taken from
     # https://gist.github.com/phpdude/1ae6f19de213d66286c8183e9e3b9ec1
-
+    docstrings = []
     parsed = ast.parse(code_string)
     for node in ast.walk(parsed):
         # let's work only on functions & classes definitions
@@ -82,10 +91,15 @@ def remove_docstring(code_string):
 
         if not hasattr(node.body[0], 'value') or not isinstance(node.body[0].value, ast.Str):
             continue
-
-    node.body = node.body[1:]
-
-    return to_source(parsed)
+        
+        docstrings.append(ast.get_docstring(node))
+        node.body = node.body[1:]
+    
+    code = to_source(parsed)
+    if ret_docstrings:
+        return docstrings, code
+    
+    return code 
 
 def rest_docstring(code, docstring, test):
     idx = test.find('assert')
@@ -101,6 +115,9 @@ def rest_docstring(code, docstring, test):
     # where the student defined optional arguments
     arguments = [a for a in arguments if "=" not in a]
     
+    test_cases = test.split(' and ')
+    inp, out = test_cases[0].split("==")
+    inp, out = inp.strip(), out.strip()
     test_cases = test.split(' and ')
     inp, out = test_cases[0].split("==")
     inp, out = inp.strip(), out.strip()
@@ -153,6 +170,9 @@ def add_docstring(code, docstring):
 def get_code_identation(code):
     code = clean_code(code)
     lines = code.split("\n")
+    if len(lines) == 1:
+        raise ValueError(code)
+        
     n_indents = len(lines[1]) - len(lines[1].lstrip())
     return lines[1][:n_indents] 
     
@@ -175,16 +195,21 @@ def find_implementation_start(code):
     if len(end_doc_line) > 0:
         start = end_doc_line[-1] + 1
     else:
-        start = 1
+        # it's not necessarily line 1, could be other codes afterwards... 
+        pos = [i for i, l in enumerate(lines) if l.startswith("def")][-1]
+        start = pos + 1
+
     return start
 
 def remove_additional_generations(completions):
-    reg = lambda l: l.startswith("<")
+    reg = lambda l: bool(l.startswith("<") or l.strip().startswith("#"))
     lines = completions.splitlines()
     extras = list(map(reg, lines))
     extras = list(map(bool, extras))
-    idx = len(lines) if True not in extras else extras.index(True)
-    return "\n".join(lines[:idx])
+    lines = [l for b, l in zip(extras, lines) if not b]
+    # idx = len(lines) if True not in extras else extras.index(True)
+    # also remove the first line with the file ext
+    return "\n".join(lines)
 
 def separate_functions(code):
 
@@ -273,7 +298,7 @@ def disassemble(func):
     lines = [l[3:].strip() for l in lines]
     return "\n".join(lines)
 
-def code_uniqueness(code, fname, method="bytecode"):
+def code_uniqueness(code, fname, method="dumped_ast"):
     """ Returns a normalized version of the code which could be
     used later to compare functions equivalence. """
     
@@ -301,8 +326,60 @@ def code_uniqueness(code, fname, method="bytecode"):
         dumped = ast.dump(ast.parse(code))
         for var in variables:
             dumped = dumped.replace(f"'{var}'", f"'{new_var_name[var]}'")
+        return dumped
     elif method == "dis":
         func.__code__ = func.__code__.replace(co_varnames=tuple(new_var_name.values()))
         return disassemble(func)
     else:
         raise ValueError("uknown method")
+
+
+def keep_percentage(dataset, percentage, code_col, group_col, ref_sol_col=None):
+    df = dataset.to_pandas()
+    if type(percentage) == int and percentage > 0:
+        f  = lambda sub_df: sub_df.head(ceil(len(sub_df)*(percentage/100)))
+    elif (percentage == 0) or (percentage == "ref_sol"):
+        if ref_sol_col: 
+            f = lambda sub_df: sub_df.loc[sub_df[ref_sol_col], code_col].iloc[0]
+        else: # select the most common solution as the "reference solution" 
+            def f(sub_df):
+                repre = sub_df[code_col].value_counts().index[0]
+                return sub_df[sub_df[code_col] == repre].iloc[0]
+    else:
+        f = lambda sub_df: sub_df
+    
+    df = df.groupby(group_col, as_index=False).apply(f).reset_index(drop=True)
+
+    return Dataset.from_pandas(df, preserve_index=False)
+
+
+
+
+
+def match_variables(source, destination, func_name):
+    """ Matches variables from destination with variables from source. """
+    
+    # Take all variables from source (incorrect code)
+    # find their counterparts in destination
+    src_func = get_code_executables(source)[func_name]
+    src_arguments = src_func.__code__.co_varnames[:src_func.__code__.co_argcount]
+     
+    # match each argument in source with each argument in destination
+    dest_func = get_code_executables(destination)[func_name]
+    dest_arguments = dest_func.__code__.co_varnames[:dest_func.__code__.co_argcount]
+    
+    new_var_names = src_arguments[:len(dest_arguments)]
+    new_var_names = {d: s for s, d in zip(src_arguments, dest_arguments)}
+    
+    dest_tokens = src_to_tokens(destination)
+    
+    offset = 0
+    new_dest_tokens = []
+    for t in dest_tokens:
+        src = new_var_names.get(t.src, t.src) if t.name == "NAME" else t.src 
+        new_token = Token(name=t.name, src=src, utf8_byte_offset=offset)
+        new_dest_tokens.append(new_token)
+        offset += len(src)
+    
+    return tokens_to_src(new_dest_tokens)
+    
