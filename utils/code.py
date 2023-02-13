@@ -29,7 +29,11 @@ def has_multiple_functions(code):
 def keep_unique_solutions(ds, code_co, fname_col):
     """ Remove duplicate solutions in terms of a metric. """
 
-    df = ds.to_pandas()
+    if "DataFrame" not in str(type(ds)):
+        df = ds.to_pandas()
+    else:
+        df = ds
+
     df["normalized"] = [code_uniqueness(code, func_name) 
                         for code, func_name in df[[code_co, fname_col]].to_numpy()]
     

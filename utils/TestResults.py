@@ -6,24 +6,20 @@ class TestResults():
     def __init__(self):
         self._prepare_for_eval()
         
-    def get_correctness(self, examples, code_col="func_code", ref_col="test"):
+    def get_correctness(self, df, code_col="func_code", ref_col="test"):
          
-        references = examples[ref_col]
-        predictions = [[c] for c in examples[code_col]]
+        references = df[ref_col].tolist()
+        predictions = [[c] for c in df[code_col]]
         _, details = self.code_eval.compute(references=references, 
                                             predictions=predictions, 
-                                            k=[1], num_workers=1, timeout=3)
+                                            k=[1], num_workers=3, timeout=5)
 
-        # Careful, if it's empty then it should be False but it does not work that way?
 
-        return {"correct": (examples[code_col][i] # must not be "" (for which code_eval returns True)
-                                and details[i][0][1]["passed"]) 
-                                    for i, code in examples[code_col]}
+        df["correct"] = [bool(code) and details[i][0][1]["passed"]
+                        for i, code in enumerate(df[code_col])]
             
-    def _analyze_details(self, ds, details):
-        """ Check which test were passed. """
-        pass 
-    
+        return df 
+
     def _prepare_for_eval(self):
         """ Change environement variables to be ready for evaluation. 
         
