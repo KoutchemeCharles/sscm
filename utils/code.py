@@ -309,9 +309,14 @@ def code_uniqueness(code, fname, method="dumped_ast"):
     # Inspirted by
     # https://stackoverflow.com/questions/20059011/check-if-two-python-functions-are-equal
     
-    if get_function_name(code) != fname:
-        warn(f"Code {code} canot have a unique value")
-        return None
+    
+
+
+    functions = separate_functions(code)
+    function_names = list(functions.keys())
+    if fname not in function_names:
+        warn(f"Code {code} has multiple functions and cannot be transformed into unique")
+        return None 
 
     executables = get_code_executables(code)
     if fname not in executables:
@@ -323,14 +328,14 @@ def code_uniqueness(code, fname, method="dumped_ast"):
     variables = func.__code__.co_varnames
     new_var_name = {var: f"x_{i}" for i, var in enumerate(variables)}
 
-    if method == "bytecode":
-        func.__code__ = func.__code__.replace(co_varnames=tuple(new_var_name.values()))
-        return func.__code__.co_code 
-    elif method == "dumped_ast":
+    if method == "dumped_ast":
         dumped = ast.dump(ast.parse(code))
         for var in variables:
             dumped = dumped.replace(f"'{var}'", f"'{new_var_name[var]}'")
         return dumped
+    elif method == "bytecode":
+        func.__code__ = func.__code__.replace(co_varnames=tuple(new_var_name.values()))
+        return func.__code__.co_code 
     elif method == "dis":
         func.__code__ = func.__code__.replace(co_varnames=tuple(new_var_name.values()))
         return disassemble(func)

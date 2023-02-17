@@ -123,7 +123,6 @@ def extract_relevant_part(solution, function_name):
     
     # if the function name is specific, look at the code and extract also subroutine
     # if there are not the func_name required, extract nothing. 
-    
     information = parse_upload(solution)
 
     # first, get the right function, if multiple ones, take the last one written 
